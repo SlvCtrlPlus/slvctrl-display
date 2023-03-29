@@ -8,10 +8,10 @@ const char* DEVICE_TYPE = "display";
 const int FM_VERSION = 10000; // 1.00.00
 const int PROTOCOL_VERSION = 10000; // 1.00.00
 
-const int SCREEN_WIDTH = 128;
-const int SCREEN_HEIGHT = 64;
-
 U8G2_ST7565_ERC12864_F_4W_SW_SPI u8g2(U8G2_R0,/* clock=*/ 2, /* data=*/ 1, /* cs=*/ 3, /* dc=*/ 0, /* reset=*/ 4);
+
+const int DISPLAY_HEIGHT = u8g2.getDisplayHeight();
+const int DISPLAY_WIDTH = u8g2.getDisplayWidth();
 
 char serial_command_buffer[2048];
 SerialCommands serialCommands(&Serial, serial_command_buffer, sizeof(serial_command_buffer), "\n", " ");
@@ -94,7 +94,7 @@ void commandIntroduce(SerialCommands* sender)
 
 void commandStatus(SerialCommands* sender)
 {
-  serial_printf(sender->GetSerial(), "status;content:%s,width:%d,height:%d\n", currentContent.c_str(), SCREEN_WIDTH, SCREEN_HEIGHT);
+  serial_printf(sender->GetSerial(), "status;content:%s,width:%d,height:%d\n", currentContent.c_str(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 }
 
 void commandAttributes(SerialCommands* sender)
@@ -148,66 +148,140 @@ void render(SerialCommands* sender, const char* content)
   JsonArray arr = doc.as<JsonArray>();
 
   u8g2.clearBuffer();
+  u8g2.setFontPosTop();
 
   for (JsonVariant value : arr) {
       JsonObject root = value.as<JsonObject>();
 
-      const char* font = root["font"];
-      const char* posX = root["posX"];
-      const char* posY = root["posY"];
-      const char* text = root["text"];
+      const char* type = root["type"];
 
-      if (text == NULL) { continue; }
-      if (posY == NULL) { posY = 0; }
-      if (posX == NULL) { posX = 0; }
-    
-      const uint8_t* u8g2_font = find_font(font);
-
-      u8g2.setFont(u8g2_font);
-
-      int strWidth = u8g2.getStrWidth(text);
-      int strHeight = u8g2.getAscent();
-
-      int screenX;
-      int screenY;
-
-      if (strcmp(posX, "center") == 0) {
-        screenX = (SCREEN_WIDTH/2)-(strWidth/2);
-      } else if (strcmp(posX, "left") == 0) {
-        screenX = 0;
-      } else if (strcmp(posX, "right") == 0) {
-        screenX = SCREEN_WIDTH-strWidth;
-      } else {
-        screenX = atoi(posX);
-
-        if (screenX < 0) {
-          // Support negative placement
-          screenX += SCREEN_WIDTH-strWidth;
-        }
+      if (strcmp(type, "text") == 0) {
+        writeText(root);
+      } else if (strcmp(type, "box") == 0 || strcmp(type, "frame") == 0) {
+        drawBox(root, type);
+      } else if (strcmp(type, "triangle") == 0) {
+        drawTriangle(root);
       }
-
-      if (strcmp(posY, "top") == 0) {
-        screenY = u8g2.getAscent();
-      } else if (strcmp(posY, "center") == 0) {
-        screenY = (SCREEN_HEIGHT/2)+(strHeight/2);
-      } else if (strcmp(posY, "bottom") == 0) {
-        screenY = SCREEN_HEIGHT+u8g2.getDescent();
-      } else {
-        screenY = atoi(posY);
-
-        if (screenY < 0) {
-          // Support negative placement
-          screenY += SCREEN_HEIGHT;
-        } else {
-          screenY += strHeight;
-        }
-      }
-
-      u8g2.setDrawColor(1);
-      u8g2.drawStr(screenX,screenY,text);
   }
 
   u8g2.sendBuffer();
+}
+
+void drawTriangle(JsonObject &root)
+{
+  JsonArray points = root["points"].as<JsonArray>();
+
+  if (points.size() != 3) {
+    return;
+  }
+  
+  JsonArray a = points[0].as<JsonArray>();
+  JsonArray b = points[1].as<JsonArray>();
+  JsonArray c = points[2].as<JsonArray>();
+
+  if (a.size() != 2 || b.size() != 2 || c.size() != 2) { return; }
+
+  u8g2.drawTriangle(
+    get_pos_x_in_px(a[0], 0),
+    get_pos_y_in_px(a[1], 0),
+    
+    get_pos_x_in_px(b[0], 0),
+    get_pos_y_in_px(b[1], 0),
+    
+    get_pos_x_in_px(c[0], 0),
+    get_pos_y_in_px(c[1], 0)
+  );
+}
+
+void drawBox(JsonObject &root, const char* type) 
+{
+  const char* widthStr = root["width"];
+  const char* heightStr = root["height"];
+  
+  if (widthStr == NULL || heightStr == NULL) { return; }
+
+  const char* posXStr = root["posX"];
+  const char* posYStr = root["posY"];
+
+  int width = atoi(widthStr);
+  int height = atoi(heightStr);
+  int posX = (posXStr == NULL) ? 0 : get_pos_x_in_px(posXStr, width);
+  int posY = (posYStr == NULL) ? 0 : get_pos_y_in_px(posYStr, height);
+
+  if (strcmp(type, "box") == 0) {
+    u8g2.drawBox(posX, posY, width, height);
+  } else if (strcmp(type, "frame") == 0) {
+    u8g2.drawFrame(posX, posY, width, height);
+  }
+}
+
+void writeText(JsonObject &root)
+{
+  const char* font = root["font"];
+  const char* posXStr = root["posX"];
+  const char* posYStr = root["posY"];
+  const char* text = root["text"];
+
+  if (text == NULL) { return; }
+  if (posYStr == NULL) { posYStr = "0"; }
+  if (posXStr == NULL) { posXStr = "0"; }
+
+  const uint8_t* u8g2_font = find_font(font);
+
+  u8g2.setFont(u8g2_font);
+
+  int strWidth = u8g2.getStrWidth(text);
+  int strHeight = u8g2.getAscent();
+
+  int posX = get_pos_x_in_px(posXStr, strWidth);
+  int posY = get_pos_y_in_px(posYStr, strHeight);
+
+  u8g2.setDrawColor(1);
+  u8g2.drawStr(posX, posY, text);
+}
+
+int get_pos_x_in_px(const char* posStr, int width) 
+{
+  int posX;
+  
+  if (strcmp(posStr, "center") == 0) {
+    posX = (DISPLAY_WIDTH/2)-(width/2);
+  } else if (strcmp(posStr, "left") == 0) {
+    posX = 0;
+  } else if (strcmp(posStr, "right") == 0) {
+    posX = DISPLAY_WIDTH-width;
+  } else {
+    posX = atoi(posStr);
+
+    if (posX < 0) {
+      // Support negative placement
+      posX += DISPLAY_WIDTH-width;
+    }
+  }
+
+  return posX;
+}
+
+int get_pos_y_in_px(const char* posStr, int height) 
+{
+  int posY;
+  
+  if (strcmp(posStr, "top") == 0) {
+    posY = 0;
+  } else if (strcmp(posStr, "center") == 0) {
+    posY = (DISPLAY_HEIGHT/2)-(height/2);
+  } else if (strcmp(posStr, "bottom") == 0) {
+    posY = DISPLAY_HEIGHT-height;
+  } else {
+    posY = atoi(posStr);
+
+    if (posY < 0) {
+      // Support negative placement
+      posY += DISPLAY_HEIGHT-height;
+    }
+  }
+
+  return posY;
 }
 
 const uint8_t* find_font(const char* input)
@@ -240,13 +314,13 @@ void print_logo(const char* message)
   int boxHeight = u8g2.getAscent()+10;
 
   u8g2.setDrawColor(1);
-  u8g2.drawBox((SCREEN_WIDTH/2)-(boxWidth/2), (SCREEN_HEIGHT/2)-(boxHeight/2)-1, boxWidth, boxHeight);
+  u8g2.drawBox((DISPLAY_WIDTH/2)-(boxWidth/2), (DISPLAY_HEIGHT/2)-(boxHeight/2)-1, boxWidth, boxHeight);
   u8g2.setDrawColor(0);
-  u8g2.drawStr((SCREEN_WIDTH/2)-strWidthHalf, (SCREEN_HEIGHT/2)+strHeightHalf, logoStr);
+  u8g2.drawStr((DISPLAY_WIDTH/2)-strWidthHalf, (DISPLAY_HEIGHT/2)+strHeightHalf, logoStr);
 
   u8g2.setFont(u8g2_font_ncenB08_tr);
   u8g2.setDrawColor(1);
-  u8g2.drawStr((SCREEN_WIDTH/2)-(u8g2.getStrWidth(message) / 2), SCREEN_HEIGHT+u8g2.getDescent(), message);
+  u8g2.drawStr((DISPLAY_WIDTH/2)-(u8g2.getStrWidth(message) / 2), DISPLAY_HEIGHT+u8g2.getDescent(), message);
 
   u8g2.sendBuffer();
 }
